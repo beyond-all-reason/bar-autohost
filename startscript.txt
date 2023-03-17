@@ -1,0 +1,40 @@
+[game]
+{
+	[allyteam0]
+	{
+		numallies = 0;
+		startrectbottom = 0.8463541483224346;
+		startrectleft = 0.010653408860002767;
+		startrectright = 0.2539062444967306;
+		startrecttop = 0.1775568143333777;
+	}
+
+	gametype = Beyond All Reason test-22345-5d4889c;
+	hostip = 0.0.0.0;
+	hostport = 43475;
+	ishost = 1;
+	mapname = DSDR 4.1;
+	myplayername = eL_bArTo;
+
+	[player0]
+	{
+		countrycode = ;
+		isfromdemo = 0;
+		name = eL_bArTo;
+		spectator = 0;
+		team = 0;
+	}
+
+	startpostype = 2;
+	[team0]
+	{
+		allyteam = 0;
+		handicap = 0;
+		rgbcolor = 0.8 0.0 0.0;
+		side = Armada;
+		teamleader = 0;
+	}
+
+}
+
+
