@@ -9,7 +9,7 @@ use super::spring::LaunchError;
 use super::spring::Spring;
 
 #[derive(Error, Debug)]
-pub enum AutohostError {
+pub enum LobbyError {
     #[error("Spring error")]
     Spring(#[from] LaunchError),
     #[error("Environment error")]
@@ -20,26 +20,26 @@ pub enum AutohostError {
     Server(#[from] ServerError),
 }
 
-pub struct Autohost<'a> {
+pub struct Lobby<'a> {
     config: &'a dyn Config,
     spring: &'a dyn Spring,
     environment: &'a dyn Environment,
 }
 
-impl<'a> Autohost<'_> {
+impl<'a> Lobby<'_> {
     pub fn new(
         config: &'a dyn Config,
         spring: &'a dyn Spring,
         environment: &'a dyn Environment,
-    ) -> Autohost<'a> {
-        Autohost {
+    ) -> Lobby<'a> {
+        Lobby {
             config,
             spring,
             environment,
         }
     }
 
-    pub fn start_game(&self) -> Result<(), AutohostError> {
+    pub fn start_game(&self) -> Result<(), LobbyError> {
         let root_dir = self.environment.get_current_dir()?;
 
         Ok(self.spring.launch(self.config, &root_dir)?)
