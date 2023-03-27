@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use super::config::{Config, ConfigError};
 use super::environment::{Environment, EnvironmentError};
+use super::server::ServerError;
 use super::spring::LaunchError;
 use super::spring::Spring;
 
@@ -15,6 +16,8 @@ pub enum AutohostError {
     Environment(#[from] EnvironmentError),
     #[error("Config error")]
     Config(#[from] ConfigError),
+    #[error("Server error")]
+    Server(#[from] ServerError),
 }
 
 pub struct Autohost<'a> {
