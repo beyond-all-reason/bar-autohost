@@ -5,11 +5,17 @@ use json::object;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tungstenite::connect;
+use urlencoding::encode;
 
 use crate::config::Config;
 use crate::http_client::{HttpClient, HttpClientError};
 
-const TOKEN_REQUEST_ENDPOINT_BASE: &str = "teiserver/api/request_token";
+const ENDPOINT_BASE: &str = "teiserver/api";
+const TOKEN_REQUEST_ENDPOINT: &str = "request_token";
+const DISCONNECT_ENDPOINT: &str = "disconnect";
+const CLIENT_NAME: &str = "bar-autohost";
+const CLIENT_HASH: &str = "ef37ced34460ba9db08eeacc323f07386ad68402"; // sha1 hash
 
 #[derive(Error, Debug)]
 pub enum ServerError {
@@ -17,6 +23,8 @@ pub enum ServerError {
     SessionStart(#[from] HttpClientError),
     #[error("Response deserialization error")]
     Deserialization(#[from] serde_json::Error),
+    #[error("Socket connection error")]
+    Socket(#[from] tungstenite::Error),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -29,6 +37,7 @@ struct SuccessfulTokenResponse {
 #[async_trait]
 pub trait Server {
     async fn start_session(&mut self) -> Result<(), ServerError>;
+    async fn end_session(&mut self) -> Result<(), ServerError>;
 }
 
 pub struct TeiServer<'a> {
@@ -51,12 +60,14 @@ impl<'a> TeiServer<'_> {
 
     async fn fetch_token(&mut self) -> Result<String, ServerError> {
         let token_request_url = format!(
-            "https://{}/{}",
+            "https://{}/{}/{}",
             self.config.get_server_domain(),
-            TOKEN_REQUEST_ENDPOINT_BASE
+            ENDPOINT_BASE,
+            TOKEN_REQUEST_ENDPOINT,
         );
 
         let body = json::stringify(object! {
+            "cmd": "c.auth.get_token",
             "email": self.config.get_server_login_email(),
             "password": self.config.get_server_login_password(),
         });
@@ -73,6 +84,30 @@ impl<'a> TeiServer<'_> {
 
         Ok(response.token_value)
     }
+
+    async fn disconnect(&mut self) -> Result<(), ServerError> {
+        // TODO: This needs to be looked at. Apparently it doesn't exist
+        let disconnect_url = format!(
+            "https://{}/{}/{}",
+            self.config.get_server_domain(),
+            ENDPOINT_BASE,
+            DISCONNECT_ENDPOINT,
+        );
+
+        let body = json::stringify(object! {
+            "cmd": "c.auth.disconnect",
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+        let response = self
+            .http_client
+            .post(&disconnect_url, body, headers)
+            .await?;
+        println!("Disconnect: {}", response);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -80,6 +115,26 @@ impl Server for TeiServer<'_> {
     async fn start_session(&mut self) -> Result<(), ServerError> {
         if self.token.is_empty() {
             self.token = self.fetch_token().await?;
+        }
+
+        let websock_server_url = format!(
+            "wss://{}/tachyon/websocket/?token={}&client_hash={}&client_name={}",
+            self.config.get_server_domain(),
+            encode(&self.token),
+            CLIENT_HASH,
+            CLIENT_NAME,
+        );
+
+        let (_socket, response) = connect(websock_server_url)?;
+        println!("{:?}", response);
+
+        Ok(())
+    }
+
+    async fn end_session(&mut self) -> Result<(), ServerError> {
+        if !self.token.is_empty() {
+            self.disconnect().await?;
+            self.token.clear();
         }
 
         Ok(())

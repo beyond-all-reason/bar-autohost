@@ -26,5 +26,7 @@ async fn main() -> Result<(), LobbyError> {
 
     lobby.start_game()?;
 
+    server.end_session().await?;
+
     Ok(())
 }
