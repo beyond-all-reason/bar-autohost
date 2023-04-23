@@ -16,22 +16,32 @@ const TOKEN_REQUEST_ENDPOINT: &str = "request_token";
 const DISCONNECT_ENDPOINT: &str = "disconnect";
 const CLIENT_NAME: &str = "bar-autohost";
 const CLIENT_HASH: &str = "ef37ced34460ba9db08eeacc323f07386ad68402"; // sha1 hash
-
-#[derive(Error, Debug)]
-pub enum ServerError {
-    #[error("Session start error")]
-    SessionStart(#[from] HttpClientError),
-    #[error("Response deserialization error")]
-    Deserialization(#[from] serde_json::Error),
-    #[error("Socket connection error")]
-    Socket(#[from] tungstenite::Error),
-}
+const TOKEN_TTL: u64 = 60 * 60 * 24;
+const NOT_FOUND_RESPONSE: &str = "Not Found";
 
 #[derive(Deserialize, Serialize)]
 struct SuccessfulTokenResponse {
     #[allow(dead_code)]
     result: String,
     token_value: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ErrorResponse {
+    #[allow(dead_code)]
+    detail: String,
+}
+
+#[derive(Error, Debug)]
+pub enum ServerError {
+    #[error("Session start error")]
+    SessionStart(String),
+    #[error("Session end error")]
+    SessionEnd(String),
+    #[error("Response deserialization error")]
+    Deserialization(#[from] serde_json::Error),
+    #[error("Socket connection error")]
+    Socket(#[from] tungstenite::Error),
 }
 
 #[async_trait]
@@ -70,6 +80,7 @@ impl<'a> TeiServer<'_> {
             "cmd": "c.auth.get_token",
             "email": self.config.get_server_login_email(),
             "password": self.config.get_server_login_password(),
+            "ttl": TOKEN_TTL.to_string(),
         });
 
         let mut headers = HeaderMap::new();
@@ -78,15 +89,20 @@ impl<'a> TeiServer<'_> {
         let response = self
             .http_client
             .post(&token_request_url, body, headers)
-            .await?;
+            .await.map_err(|e| ServerError::SessionStart(format!("Token request failed: {:?}", e)))?;
 
-        let response: SuccessfulTokenResponse = serde_json::from_str(&response)?;
+        if let Ok(response) = serde_json::from_str::<SuccessfulTokenResponse>(&response) {
+            Ok(response.token_value)
+        } else if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&response) {
+            Err(ServerError::SessionStart(format!("Error received for token request: {:?}", error_response)))
+        } else {
+            Err(ServerError::SessionStart(format!("Unknown response for token request: {:?}", response)))
+        }
 
-        Ok(response.token_value)
     }
 
     async fn disconnect(&mut self) -> Result<(), ServerError> {
-        // TODO: This needs to be looked at. Apparently it doesn't exist
+        // TODO: Find out what is expected here. Currently returns "Not Found"
         let disconnect_url = format!(
             "https://{}/{}/{}",
             self.config.get_server_domain(),
@@ -95,7 +111,7 @@ impl<'a> TeiServer<'_> {
         );
 
         let body = json::stringify(object! {
-            "cmd": "c.auth.disconnect",
+            "command": "disconnect",
         });
 
         let mut headers = HeaderMap::new();
@@ -104,8 +120,8 @@ impl<'a> TeiServer<'_> {
         let response = self
             .http_client
             .post(&disconnect_url, body, headers)
-            .await?;
-        println!("Disconnect: {}", response);
+            .await.map_err(|e| ServerError::SessionEnd(format!("Disconnect request failed: {:?}", e)))?;
+
         Ok(())
     }
 }
