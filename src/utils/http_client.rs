@@ -21,6 +21,7 @@ pub trait HttpClient {
     ) -> Result<String, HttpClientError>;
 }
 
+#[derive(Default)]
 pub struct TeiHttpClient {
     client: Client,
 }

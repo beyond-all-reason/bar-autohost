@@ -14,6 +14,7 @@ pub trait Environment {
     fn get_current_dir(&self) -> Result<PathBuf, EnvironmentError>;
 }
 
+#[derive(Default)]
 pub struct AutohostEnvironment {}
 
 impl AutohostEnvironment {

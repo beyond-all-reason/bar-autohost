@@ -2,11 +2,11 @@ use std::result::Result;
 
 use thiserror::Error;
 
-use super::config::{Config, ConfigError};
-use super::environment::{Environment, EnvironmentError};
-use super::server::ServerError;
 use super::spring::LaunchError;
 use super::spring::Spring;
+use crate::server_coms::server_error::ServerError;
+use crate::utils::config::{Config, ConfigError};
+use crate::utils::environment::{Environment, EnvironmentError};
 
 #[derive(Error, Debug)]
 pub enum LobbyError {

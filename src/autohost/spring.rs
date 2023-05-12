@@ -5,7 +5,7 @@ use std::result::Result;
 
 use thiserror::Error;
 
-use crate::config::Config;
+use crate::utils::config::Config;
 
 #[derive(Error, Debug)]
 pub enum LaunchError {
@@ -20,6 +20,7 @@ pub trait Spring {
 }
 
 /// A Helper struct for launching `spring-headless` processes.
+#[derive(Default)]
 pub struct SpringHeadless {}
 
 impl SpringHeadless {

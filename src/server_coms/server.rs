@@ -1,15 +1,16 @@
 use std::result::Result;
 
 use async_trait::async_trait;
-use json::object;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
-use tungstenite::connect;
+use serde::Serialize;
 use urlencoding::encode;
 
-use crate::config::Config;
-use crate::http_client::{HttpClient, HttpClientError};
+use crate::utils::config::Config;
+use crate::utils::http_client::HttpClient;
+use crate::utils::http_request;
+use crate::utils::websocket_client::WebsocketClient;
+
+use super::responses::{ErrorResponse, SuccessfulTokenResponse};
+use super::server_error::ServerError;
 
 const ENDPOINT_BASE: &str = "teiserver/api";
 const TOKEN_REQUEST_ENDPOINT: &str = "request_token";
@@ -17,31 +18,18 @@ const DISCONNECT_ENDPOINT: &str = "disconnect";
 const CLIENT_NAME: &str = "bar-autohost";
 const CLIENT_HASH: &str = "ef37ced34460ba9db08eeacc323f07386ad68402"; // sha1 hash
 const TOKEN_TTL: u64 = 60 * 60 * 24;
-const NOT_FOUND_RESPONSE: &str = "Not Found";
 
-#[derive(Deserialize, Serialize)]
-struct SuccessfulTokenResponse {
-    #[allow(dead_code)]
-    result: String,
-    token_value: String,
+#[derive(Serialize)]
+struct Authenticate<'a> {
+    pub cmd: &'a str,
+    pub email: &'a str,
+    pub password: &'a str,
+    pub ttl: &'a str,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct ErrorResponse {
-    #[allow(dead_code)]
-    detail: String,
-}
-
-#[derive(Error, Debug)]
-pub enum ServerError {
-    #[error("Session start error")]
-    SessionStart(String),
-    #[error("Session end error")]
-    SessionEnd(String),
-    #[error("Response deserialization error")]
-    Deserialization(#[from] serde_json::Error),
-    #[error("Socket connection error")]
-    Socket(#[from] tungstenite::Error),
+#[derive(Serialize)]
+struct Disconnect {
+    command: String,
 }
 
 #[async_trait]
@@ -53,6 +41,7 @@ pub trait Server {
 pub struct TeiServer<'a> {
     config: &'a (dyn Config + Sync + Send),
     http_client: &'a (dyn HttpClient + Sync + Send),
+    socket_client: &'a mut (dyn WebsocketClient + Sync + Send),
     token: String,
 }
 
@@ -60,45 +49,52 @@ impl<'a> TeiServer<'_> {
     pub fn new(
         config: &'a (dyn Config + Sync + Send),
         http_client: &'a (dyn HttpClient + Sync + Send),
+        socket_client: &'a mut (dyn WebsocketClient + Sync + Send),
     ) -> TeiServer<'a> {
         TeiServer {
             config,
             http_client,
+            socket_client,
             token: String::new(),
         }
     }
 
     async fn fetch_token(&mut self) -> Result<String, ServerError> {
-        let token_request_url = format!(
+        let authenticate_endpoint_url = format!(
             "https://{}/{}/{}",
             self.config.get_server_domain(),
             ENDPOINT_BASE,
             TOKEN_REQUEST_ENDPOINT,
         );
 
-        let body = json::stringify(object! {
-            "cmd": "c.auth.get_token",
-            "email": self.config.get_server_login_email(),
-            "password": self.config.get_server_login_password(),
-            "ttl": TOKEN_TTL.to_string(),
-        });
+        let authenticate_request = Authenticate {
+            cmd: "c.auth.get_token",
+            email: self.config.get_server_login_email(),
+            password: self.config.get_server_login_password(),
+            ttl: &TOKEN_TTL.to_string(),
+        };
 
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        let response = self
-            .http_client
-            .post(&token_request_url, body, headers)
-            .await.map_err(|e| ServerError::SessionStart(format!("Token request failed: {:?}", e)))?;
+        let response = http_request::post(
+            self.http_client,
+            &authenticate_endpoint_url,
+            &authenticate_request,
+        )
+        .await
+        .map_err(|e| ServerError::SessionStart(format!("Token request failed: {:?}", e)))?;
 
         if let Ok(response) = serde_json::from_str::<SuccessfulTokenResponse>(&response) {
             Ok(response.token_value)
         } else if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&response) {
-            Err(ServerError::SessionStart(format!("Error received for token request: {:?}", error_response)))
+            Err(ServerError::SessionStart(format!(
+                "Error received for token request: {:?}",
+                error_response
+            )))
         } else {
-            Err(ServerError::SessionStart(format!("Unknown response for token request: {:?}", response)))
+            Err(ServerError::SessionStart(format!(
+                "Unknown response for token request: {:?}",
+                response
+            )))
         }
-
     }
 
     async fn disconnect(&mut self) -> Result<(), ServerError> {
@@ -110,17 +106,15 @@ impl<'a> TeiServer<'_> {
             DISCONNECT_ENDPOINT,
         );
 
-        let body = json::stringify(object! {
-            "command": "disconnect",
-        });
+        let disconnect_request = Disconnect {
+            command: "disconnect".to_string(),
+        };
 
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        let response = self
-            .http_client
-            .post(&disconnect_url, body, headers)
-            .await.map_err(|e| ServerError::SessionEnd(format!("Disconnect request failed: {:?}", e)))?;
+        http_request::post(self.http_client, &disconnect_url, &disconnect_request)
+            .await
+            .map_err(|e| {
+                ServerError::SessionEnd(format!("Error occured while ending session: {:?}", e))
+            })?;
 
         Ok(())
     }
@@ -141,8 +135,11 @@ impl Server for TeiServer<'_> {
             CLIENT_NAME,
         );
 
-        let (_socket, response) = connect(websock_server_url)?;
-        println!("{:?}", response);
+        self.socket_client
+            .connect(&websock_server_url)
+            .map_err(|e| {
+                ServerError::SessionStart(format!("Error occured while starting session: {:?}", e))
+            })?;
 
         Ok(())
     }
@@ -161,6 +158,10 @@ impl Server for TeiServer<'_> {
 mod tests {
 
     use async_trait::async_trait;
+    use reqwest::header::HeaderMap;
+
+    use crate::utils::http_client::HttpClientError;
+    use crate::utils::websocket_client::WebsocketError;
 
     use super::*;
 
@@ -244,13 +245,60 @@ mod tests {
         }
     }
 
+    struct FakeWebsocketClient {
+        should_connect: bool,
+    }
+
+    impl FakeWebsocketClient {
+        fn build(should_connect: bool) -> Self {
+            FakeWebsocketClient { should_connect }
+        }
+    }
+
+    impl WebsocketClient for FakeWebsocketClient {
+        fn connect(&mut self, _server_url: &str) -> Result<(), WebsocketError> {
+            if self.should_connect {
+                Ok(())
+            } else {
+                Err(WebsocketError::Connection(
+                    "Something went wrong!".to_string(),
+                ))
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_session_start_fails_when_http_client_returns_error() {
         let config = FakeConfig::new();
 
         let http_client = FakeHttpClient::build_with_failed_response();
 
-        let mut server = TeiServer::new(&config, &http_client);
+        let mut websock_client = FakeWebsocketClient::build(false);
+
+        let mut server = TeiServer::new(&config, &http_client, &mut websock_client);
+
+        let result = server.start_session().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_start_fails_when_websock_client_returns_error() {
+        let config = FakeConfig::new();
+
+        let successful_server_response = SuccessfulTokenResponse {
+            token_value: "fake_token".to_string(),
+            result: "fake_result".to_string(),
+        };
+
+        let successful_server_response =
+            serde_json::to_string(&successful_server_response).unwrap();
+
+        let http_client =
+            FakeHttpClient::build_with_successful_response(successful_server_response);
+
+        let mut websock_client = FakeWebsocketClient::build(false);
+
+        let mut server = TeiServer::new(&config, &http_client, &mut websock_client);
 
         let result = server.start_session().await;
         assert!(result.is_err());
@@ -271,7 +319,9 @@ mod tests {
         let http_client =
             FakeHttpClient::build_with_successful_response(successful_server_response);
 
-        let mut server = TeiServer::new(&config, &http_client);
+        let mut websock_client = FakeWebsocketClient::build(true);
+
+        let mut server = TeiServer::new(&config, &http_client, &mut websock_client);
 
         let result = server.start_session().await;
         assert!(result.is_ok());
